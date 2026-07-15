@@ -169,7 +169,8 @@ def test_esp_export_semantic_includes_record_semantics(tmp_path) -> None:
 
     result = CliRunner().invoke(cli, ["--game", "fo4", "esp", "export", str(plugin_path), "--mode", "semantic"])
     assert result.exit_code == 0, result.output
-    assert '"kind": "quest"' in result.output
+    payload = json.loads(result.output)
+    assert payload["items"][0]["children"][0]["semantic"]["kind"] == "quest"
 
 
 def test_esp_export_authoring_and_build_roundtrip(tmp_path) -> None:
@@ -281,8 +282,9 @@ def test_esp_check_errors_outputs_validation_report_and_fails_on_issues(tmp_path
     result = CliRunner().invoke(cli, ["--game", "fo4", "esp", "check-errors", str(plugin_path)])
 
     assert result.exit_code == 1, result.output
-    assert '"plugin": "Bad.esp"' in result.output
-    assert '"issue_count": 1' in result.output
+    payload = json.loads(result.output)
+    assert payload["plugin"] == "Bad.esp"
+    assert payload["issue_count"] == 1
     assert "Found a NULL reference" in result.output
 
 
@@ -375,7 +377,8 @@ def test_esp_check_errors_can_succeed_with_no_fail(tmp_path, monkeypatch) -> Non
     result = CliRunner().invoke(cli, ["esp", "check-errors", str(plugin_path), "--no-fail"])
 
     assert result.exit_code == 0, result.output
-    assert '"warning_count": 1' in result.output
+    payload = json.loads(result.output)
+    assert payload["warning_count"] == 1
 
 
 # --- set-record / delete-record ----------------------------------------------
