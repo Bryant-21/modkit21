@@ -64,6 +64,17 @@ jobs:
       - run: uv sync
       - name: Build modkit CLI
         run: uv run --with pyinstaller pyinstaller modkit.spec --noconfirm
+      - name: Build ModBox21 toolkit
+        shell: pwsh
+        run: |
+          uv run --with pyinstaller pyinstaller ModBox21.spec --noconfirm
+          New-Item -ItemType Directory -Force -Path dist/ModBox21/_internal/resource | Out-Null
+          Copy-Item -Recurse -Force resource/* dist/ModBox21/_internal/resource
+          Remove-Item -Recurse -Force dist/ModBox21/_internal/resource/spriggit -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path dist/ModBox21/modkit | Out-Null
+          Copy-Item -Force dist/modkit/modkit.exe dist/ModBox21/modkit/
+          Copy-Item -Recurse -Force dist/modkit/_internal dist/ModBox21/modkit/
+          Get-ChildItem -Recurse -Include "*.pdb","*.debug" dist/ModBox21 | Remove-Item -Force
       - name: Build NIF editor
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File build_nif_ui.ps1
@@ -71,6 +82,7 @@ jobs:
         shell: pwsh
         run: |
           $v = "${{ needs.gate.outputs.version }}"
+          Compress-Archive -Path dist/ModBox21/ModBox21.exe, dist/ModBox21/_internal, dist/ModBox21/modkit -DestinationPath "ModBox21-$v-win64.zip"
           Compress-Archive -Path dist/modkit/* -DestinationPath "modkit-$v-win64.zip"
           Compress-Archive -Path dist/ModBox21-NIF/* -DestinationPath "ModBox21-NIF-$v-win64.zip"
       - name: Create release
@@ -99,24 +111,23 @@ jobs:
 
           ## Downloads
 
+          - **`ModBox21-VERSION_PLACEHOLDER-win64.zip`** - the complete desktop
+            toolkit, all 42 workspaces. Unzip and run `ModBox21.exe`. Includes a
+            bundled copy of the `modkit` CLI in the `modkit\` subfolder.
           - **`modkit-VERSION_PLACEHOLDER-win64.zip`** - the `modkit` command-line
-            tool. Unzip anywhere and run `modkit.exe`. On first run, use
+            tool on its own. Unzip anywhere and run `modkit.exe`. On first run, use
             `modkit.exe setup --force` to open the setup UI and write your `.env`
             config.
           - **`ModBox21-NIF-VERSION_PLACEHOLDER-win64.zip`** - the standalone NIF
             editor desktop app, packaged on its own.
-          - The full desktop toolkit (all 42 workspaces) currently runs from source
-            only: clone the repo, `uv sync`, then `uv run python app.py`. See the
-            [README](https://github.com/Bryant-21/modkit21#readme) for setup
-            details.
 
           ## Requirements
 
           - Windows x64
           - Your own legally-owned Bethesda game installs - no game assets are
             included
-          - [uv](https://docs.astral.sh/uv/getting-started/installation/) if
-            running the desktop toolkit from source
+          - [uv](https://docs.astral.sh/uv/getting-started/installation/), only if
+            running the desktop toolkit or CLI from source instead of a release zip
 
           ## License
 
@@ -126,5 +137,5 @@ jobs:
           '@
           $notes = $notes -replace 'VERSION_PLACEHOLDER', $v
           $notes | Out-File -FilePath release_notes.md -Encoding utf8
-          $files = @("modkit-$v-win64.zip", "ModBox21-NIF-$v-win64.zip")
+          $files = @("ModBox21-$v-win64.zip", "modkit-$v-win64.zip", "ModBox21-NIF-$v-win64.zip")
           gh release create "v$v" --target ${{ github.sha }} $files --title "v$v" --notes-file release_notes.md

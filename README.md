@@ -817,8 +817,9 @@ ships a ready-made script for the NIF-only variant:
 powershell -ExecutionPolicy Bypass -File build_nif_ui.ps1
 ```
 
-`.github/workflows/build.yml` builds and zips both the `modkit` CLI and the
-`ModBox21-NIF` variant on tagged releases.
+`.github/workflows/build.yml` builds and zips the `modkit` CLI, the full
+`ModBox21` desktop toolkit, and the `ModBox21-NIF` variant on tagged
+releases.
 
 ## Troubleshooting
 

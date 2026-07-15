@@ -242,6 +242,32 @@ def deploy(ctx, name, skip_build, skip_pack, skip_papyrus_compile, esp_only, no_
         raise click.ClickException(str(e))
 
 
+@mod.command("deploy-loose-file")
+@click.argument("name")
+@click.argument("asset_path", type=click.Path(path_type=str))
+@click.option("--data-dir", default=None, help="Override game Data/ directory")
+@click.pass_context
+def deploy_loose_file_command(ctx, name, asset_path, data_dir):
+    """Deploy one mod asset as a tracked loose file."""
+    from pathlib import Path
+    from creation_lib.build.loose_deploy import deploy_loose_file
+    from app.paths import get_app_root
+
+    game = _resolve_mod_game(ctx, name)
+    game_data = Path(data_dir) if data_dir else _resolve_game_data_dir(game)
+    try:
+        deploy_loose_file(
+            name,
+            asset_path,
+            game=game,
+            game_data_dir=game_data,
+            project_root=get_app_root(),
+            on_progress=click.echo,
+        )
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc))
+
+
 @mod.command()
 @click.argument("name")
 @click.option("--data-dir", default=None, help="Override game Data/ directory")
