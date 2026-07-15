@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+dist/
+build/
+release/
+logs/
+modkit.exe
+_internal/
+ui/toolkit/toolkit_settings.json
+ui/toolkit/settings_data/
+ui/editor/editor_settings.json
+.pytest_cache/

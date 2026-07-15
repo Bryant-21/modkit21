@@ -1,0 +1,128 @@
+name: Build
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  test:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_TOKEN || github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: py_creation_lib -> py_creation_lib/target
+      - run: uv sync
+      - run: uv run pytest
+  gate:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          VERSION=$(tr -d '[:space:]' < VERSION)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null 2>&1; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+  release:
+    needs: gate
+    if: needs.gate.outputs.should_release == 'true'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_TOKEN || github.token }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: py_creation_lib -> py_creation_lib/target
+      - run: uv sync
+      - name: Build modkit CLI
+        run: uv run --with pyinstaller pyinstaller modkit.spec --noconfirm
+      - name: Build NIF editor
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File build_nif_ui.ps1
+      - name: Zip artifacts
+        shell: pwsh
+        run: |
+          $v = "${{ needs.gate.outputs.version }}"
+          Compress-Archive -Path dist/modkit/* -DestinationPath "modkit-$v-win64.zip"
+          Compress-Archive -Path dist/ModBox21-NIF/* -DestinationPath "ModBox21-NIF-$v-win64.zip"
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $v = "${{ needs.gate.outputs.version }}"
+          $notes = @'
+          # ModBox21 vVERSION_PLACEHOLDER
+
+          ModBox21 is a Bethesda modding toolkit: a desktop app built on ImGui and a
+          unified `modkit` CLI, backed by a native Python/Rust service layer for
+          building, inspecting, and deploying mods. It's Windows-first and centers on
+          Fallout 4 workflows, with read/reference support for Fallout 76, Skyrim
+          Special Edition, Starfield, Fallout 3, and Fallout: New Vegas.
+
+          ## What's In This Release
+
+          - `modkit` CLI: 14 command groups, 146 subcommands, covering game-data
+            search, ESP/ESM/ESL authoring, NIF editing, archive tools, Havok cloth,
+            and Creation Kit automation.
+          - Desktop toolkit: 42 workspaces (Mod Manager, ESP Editor, NIF Editor,
+            materials, audio, animation/Havok, worldspace/LOD, and more) in one
+            ImGui shell.
+
+          ## Downloads
+
+          - **`modkit-VERSION_PLACEHOLDER-win64.zip`** - the `modkit` command-line
+            tool. Unzip anywhere and run `modkit.exe`. On first run, use
+            `modkit.exe setup --force` to open the setup UI and write your `.env`
+            config.
+          - **`ModBox21-NIF-VERSION_PLACEHOLDER-win64.zip`** - the standalone NIF
+            editor desktop app, packaged on its own.
+          - The full desktop toolkit (all 42 workspaces) currently runs from source
+            only: clone the repo, `uv sync`, then `uv run python app.py`. See the
+            [README](https://github.com/Bryant-21/modkit21#readme) for setup
+            details.
+
+          ## Requirements
+
+          - Windows x64
+          - Your own legally-owned Bethesda game installs - no game assets are
+            included
+          - [uv](https://docs.astral.sh/uv/getting-started/installation/) if
+            running the desktop toolkit from source
+
+          ## License
+
+          GPL-3.0 - see [LICENSE](https://github.com/Bryant-21/modkit21/blob/main/LICENSE).
+
+          Full docs: https://github.com/Bryant-21/modkit21#readme
+          '@
+          $notes = $notes -replace 'VERSION_PLACEHOLDER', $v
+          $notes | Out-File -FilePath release_notes.md -Encoding utf8
+          $files = @("modkit-$v-win64.zip", "ModBox21-NIF-$v-win64.zip")
+          gh release create "v$v" --target ${{ github.sha }} $files --title "v$v" --notes-file release_notes.md
