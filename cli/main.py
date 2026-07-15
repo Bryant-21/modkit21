@@ -84,6 +84,8 @@ def cli(ctx, game: str, fmt: str, db_dir: str):
 def version():
     """Print version and exit."""
     version_file = os.path.join(_PROJECT_ROOT, "VERSION")
+    if not os.path.isfile(version_file) and getattr(sys, "frozen", False):
+        version_file = os.path.join(sys._MEIPASS, "VERSION")
     if os.path.isfile(version_file):
         with open(version_file) as f:
             click.echo(f"modkit {f.read().strip()}")
