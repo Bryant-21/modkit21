@@ -84,6 +84,37 @@ def test_esp_list_records_accepts_display_alias(tmp_path) -> None:
     assert payload["count"] == 2
 
 
+def test_esp_list_records_filters_and_emits_subrecord_data(tmp_path) -> None:
+    plugin_path = tmp_path / "CliSubrecords.esp"
+    _make_plugin_with_records(plugin_path)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--game",
+            "fo4",
+            "esp",
+            "list-records",
+            str(plugin_path),
+            "--type",
+            "MISC",
+            "--type",
+            "KYWD",
+            "--has-subrecord",
+            "EDID",
+            "--include-subrecord-data",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["count"] == 2
+    assert payload["type"] is None
+    assert payload["types"] == ["MISC", "KYWD"]
+    assert payload["subrecords"] == ["EDID"]
+    assert all(record["subrecord_data"]["EDID"] for record in payload["records"])
+
+
 def test_esp_get_record_by_editor_id(tmp_path) -> None:
     plugin_path = tmp_path / "CliGetEid.esp"
     _make_plugin_with_records(plugin_path)
@@ -662,6 +693,68 @@ def test_esp_disable_quest_autostart_dry_run_does_not_save(tmp_path) -> None:
     assert out["dry_run"] is True
     assert out["records_changed"] == 1
     assert _quest_dnam_flags(plugin_path)["B21_StartQuest"] == 0x0021
+
+
+def test_esp_disable_quest_autostart_keeps_first_enabled_quests_by_form_id(tmp_path) -> None:
+    plugin_path = tmp_path / "CliQuestAutostartBisect.esp"
+    plugin = Plugin.new(plugin_path.name, game="fo4")
+    for editor_id in ("B21_First", "B21_Second", "B21_Third", "B21_Fourth"):
+        record = plugin.new_record("QUST")
+        record.editor_id = editor_id
+        record.add_subrecord("DNAM", (0x0021).to_bytes(2, "little") + b"\xAA\xBB")
+        plugin.add_record(record)
+    plugin.save(plugin_path)
+
+    out = json.loads(
+        _esp(
+            "disable-quest-autostart",
+            str(plugin_path),
+            "--keep-first",
+            "2",
+        ).output
+    )
+
+    assert out["records_kept_enabled"] == 2
+    assert out["records_changed"] == 2
+    assert [row["editor_id"] for row in out["kept_records"]] == [
+        "B21_First",
+        "B21_Second",
+    ]
+    assert _quest_dnam_flags(plugin_path) == {
+        "B21_First": 0x0021,
+        "B21_Second": 0x0021,
+        "B21_Third": 0x0020,
+        "B21_Fourth": 0x0020,
+    }
+
+
+def test_esp_disable_quest_autostart_keeps_exact_editor_id(tmp_path) -> None:
+    plugin_path = tmp_path / "CliQuestAutostartKeepEditorID.esp"
+    plugin = Plugin.new(plugin_path.name, game="fo4")
+    for editor_id in ("B21_First", "B21_Suspect", "B21_Third"):
+        record = plugin.new_record("QUST")
+        record.editor_id = editor_id
+        record.add_subrecord("DNAM", (0x0021).to_bytes(2, "little") + b"\xAA\xBB")
+        plugin.add_record(record)
+    plugin.save(plugin_path)
+
+    out = json.loads(
+        _esp(
+            "disable-quest-autostart",
+            str(plugin_path),
+            "--keep-editor-id",
+            "b21_suspect",
+        ).output
+    )
+
+    assert out["records_kept_enabled"] == 1
+    assert out["records_changed"] == 2
+    assert out["kept_records"][0]["editor_id"] == "B21_Suspect"
+    assert _quest_dnam_flags(plugin_path) == {
+        "B21_First": 0x0020,
+        "B21_Suspect": 0x0021,
+        "B21_Third": 0x0020,
+    }
 
 
 def test_esp_search_glob(tmp_path) -> None:

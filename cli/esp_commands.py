@@ -139,6 +139,13 @@ def _form_key_object_id(form_key: str) -> int | None:
         return None
 
 
+def _xloc_level(subrecords: list[tuple[str, bytes, str | None]] | None) -> int | None:
+    for signature, data, _semantic_type in subrecords or ():
+        if signature == "XLOC":
+            return data[0] if data else None
+    return None
+
+
 # Well-known FO4 master RACE records so `--race HumanRace` resolves without the
 # game-data index (master races aren't present in the converted plugin, so their
 # EditorIDs can't be read back from it).
@@ -406,20 +413,77 @@ def inspect(ctx, plugin_path, strings_dir, language, backend):
         output(result, ctx.obj.get("fmt", "json"))
 
 
+@esp.command(name="audit-topology")
+@click.argument(
+    "source_path",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False, readable=True),
+)
+@click.argument(
+    "output_path",
+    type=click.Path(path_type=Path, exists=True, dir_okay=False, readable=True),
+)
+@click.option(
+    "--source-game",
+    type=click.Choice(["fo3", "fnv", "fo4", "fo76", "skyrimse", "starfield"]),
+    default=None,
+    help="Source plugin game profile. Defaults to the active --game.",
+)
+@click.option(
+    "--target-game",
+    type=click.Choice(["fo3", "fnv", "fo4", "fo76", "skyrimse", "starfield"]),
+    default=None,
+    help="Converted plugin game profile. Defaults to the active --game.",
+)
+@click.option(
+    "--format",
+    "report_format",
+    type=click.Choice(["json", "pretty", "compact", "markdown"]),
+    default=None,
+    help="Report format. Overrides the global --format for this command.",
+)
+@click.pass_context
+def audit_topology(ctx, source_path, output_path, source_game, target_game, report_format):
+    """Compare nested exterior topology between source and converted plugins.
+
+    The native scanner walks GRUP and record headers directly and only decodes
+    WRLD EditorIDs and CELL coordinates, so large masters do not require a full
+    authoring export or a materialized record tree.
+    """
+    from creation_lib.esp.topology_audit import audit_topology_pair, render_topology_report
+
+    active_game = ctx.obj.get("game")
+    try:
+        report = audit_topology_pair(
+            source_path,
+            output_path,
+            source_game=source_game or active_game,
+            target_game=target_game or active_game,
+        )
+        rendered = render_topology_report(
+            report,
+            report_format or ctx.obj.get("fmt", "json"),
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(rendered, nl=not rendered.endswith("\n"))
+
+
 @esp.command(name="list-records")
 @click.argument("plugin_path")
-@click.option("--type", "record_type", default=None, help="Record type to list, e.g. WRLD or a display alias like Worldspaces. Omit to list every record.")
+@click.option("--type", "record_types", multiple=True, help="Record type to list, e.g. WRLD or a display alias like Worldspaces. Repeatable; omit to list every record.")
 @click.option("--match", "match_pattern", default=None, help="Only list records whose EditorID matches this glob (or --substring/--regex) pattern.")
 @click.option("--substring", "mode_substring", is_flag=True, default=False, help="Treat --match as a case-insensitive substring instead of glob.")
 @click.option("--regex", "mode_regex", is_flag=True, default=False, help="Treat --match as a regular expression instead of glob.")
 @click.option("--full", "match_full", is_flag=True, default=False, help="Also match --match against each record's full/display name.")
 @click.option("--case-sensitive", is_flag=True, default=False, help="Case-sensitive --match (default is case-insensitive).")
+@click.option("--has-subrecord", "subrecord_signatures", multiple=True, help="Only list records containing this four-character subrecord. Repeatable.")
+@click.option("--include-subrecord-data", is_flag=True, default=False, help="Include matching --has-subrecord payloads as hex.")
 @click.option("--max-results", type=int, default=None, help="Limit the number of records returned.")
 @click.option("--strings-dir", default=None, help="Override localized strings directory.")
 @click.option("--language", default=None, help="Preferred localized strings language.")
 @click.option("--backend", type=click.Choice(["auto", "native", "python"]), default="auto", show_default=True, help="ESP runtime backend.")
 @click.pass_context
-def list_records(ctx, plugin_path, record_type, match_pattern, mode_substring, mode_regex, match_full, case_sensitive, max_results, strings_dir, language, backend):
+def list_records(ctx, plugin_path, record_types, match_pattern, mode_substring, mode_regex, match_full, case_sensitive, subrecord_signatures, include_subrecord_data, max_results, strings_dir, language, backend):
     """List a plugin's records as EditorID + local FormID pairs.
 
     FormIDs are plugin-local object IDs (e.g. 000800, not 01000800). Pass --match
@@ -432,7 +496,12 @@ def list_records(ctx, plugin_path, record_type, match_pattern, mode_substring, m
     plugin_file = Path(plugin_path)
     if not plugin_file.is_file():
         raise click.ClickException(f"Plugin not found: {plugin_file}")
-    sig = record_type_signature(record_type) if record_type else None
+    signatures = [record_type_signature(value) for value in record_types]
+    subrecord_signatures = tuple(value.upper() for value in subrecord_signatures)
+    if any(len(value) != 4 or not value.isascii() for value in subrecord_signatures):
+        raise click.ClickException("--has-subrecord values must be four-character ASCII signatures")
+    if include_subrecord_data and not subrecord_signatures:
+        raise click.ClickException("--include-subrecord-data requires --has-subrecord")
     with _load_plugin(
         plugin_file,
         game=ctx.obj.get("game"),
@@ -443,20 +512,47 @@ def list_records(ctx, plugin_path, record_type, match_pattern, mode_substring, m
         handle = getattr(plugin, "_rust_handle", None)
         if handle is None:
             raise click.ClickException("list-records requires the native ESP backend.")
-        matches = _run_search(
-            plugin,
+        matches = plugin.search_records(
             match_pattern if match_pattern is not None else "*",
             mode=_resolve_search_mode(mode_substring, mode_regex) if match_pattern is not None else "glob",
             match_full=match_full if match_pattern is not None else False,
             read_full=match_full if match_pattern is not None else False,
-            record_type=record_type,
+            signatures=signatures or None,
             case_sensitive=case_sensitive if match_pattern is not None else True,
-            limit=max_results,
+            limit=None if subrecord_signatures else max_results,
         )
-        records = [_format_match(match, detail=match_full and match_pattern is not None) for match in matches]
+        if subrecord_signatures:
+            from creation_lib.esp import native_runtime
+
+            form_ids = set(
+                native_runtime.plugin_handle_record_form_ids_with_subrecords(
+                    handle, list(subrecord_signatures)
+                )
+            )
+            matches = [match for match in matches if int(match["form_id"]) in form_ids]
+        if max_results is not None:
+            matches = matches[:max_results]
+        records = []
+        for match in matches:
+            record = _format_match(match, detail=match_full and match_pattern is not None)
+            if include_subrecord_data:
+                subrecords = native_runtime.plugin_handle_record_subrecords(
+                    handle, int(match["form_id"])
+                )
+                record["subrecord_data"] = {
+                    signature: [
+                        data.hex().upper()
+                        for actual_signature, data, _semantic_type in subrecords or []
+                        if actual_signature == signature
+                    ]
+                    for signature in subrecord_signatures
+                }
+            records.append(record)
         result = {
             "plugin": plugin.plugin_name,
-            "type": sig,
+            "type": signatures[0] if len(signatures) == 1 else None,
+            "types": signatures,
+            "subrecords": list(subrecord_signatures),
             "count": len(records),
             "records": records,
         }
@@ -2022,11 +2118,19 @@ def delete_placed_by_base(ctx, plugin_path, base_types, race_specs, dry_run, out
         # cheaper than resolving NAME for every REFR on a 1 GB master.
         scan_signatures = ["ACHR"] if race_filter_specs else list(_PLACED_RECORD_SIGNATURES)
         placed_ids = native_runtime.plugin_handle_record_form_ids(handle, scan_signatures)
+        xloc_form_ids = set(
+            native_runtime.plugin_handle_record_form_ids_with_subrecords(handle, ["XLOC"])
+        )
         matched: list[int] = []
         matched_base_keys: dict[int, str] = {}
         matched_race_keys: dict[int, str] = {}
-        by_base: dict[str, dict[str, int]] = {sig: {"matched": 0, "deleted": 0} for sig in sorted(requested_set)}
+        by_base: dict[str, dict[str, int]] = {
+            sig: {"matched": 0, "with_lock_data": 0, "deleted": 0}
+            for sig in sorted(requested_set)
+        }
         by_race: dict[str, dict[str, int]] = {}
+        matched_lock_levels: dict[int | None, int] = {}
+        matched_locked_bases: dict[str, dict[str, object]] = {}
         placed_signature_counts = {sig: 0 for sig in _PLACED_RECORD_SIGNATURES}
         base_signature_cache: dict[str, str | None] = {}
         base_race_cache: dict[str, str | None] = {}
@@ -2041,7 +2145,12 @@ def delete_placed_by_base(ctx, plugin_path, base_types, race_specs, dry_run, out
             base_form_key = None
             if delete_all:
                 base_key = "ALL"
-                by_base.setdefault(base_key, {"matched": 0, "deleted": 0})["matched"] += 1
+                counts = by_base.setdefault(
+                    base_key, {"matched": 0, "with_lock_data": 0, "deleted": 0}
+                )
+                counts["matched"] += 1
+                if form_id in xloc_form_ids:
+                    counts["with_lock_data"] += 1
                 matched.append(form_id)
                 matched_base_keys[form_id] = base_key
                 continue
@@ -2078,7 +2187,24 @@ def delete_placed_by_base(ctx, plugin_path, base_types, race_specs, dry_run, out
             if race_filter:
                 if race_key is None or race_key == "<no RNAM>" or race_key.lower() not in race_filter:
                     continue
-            by_base.setdefault(base_key, {"matched": 0, "deleted": 0})["matched"] += 1
+            counts = by_base.setdefault(
+                base_key, {"matched": 0, "with_lock_data": 0, "deleted": 0}
+            )
+            counts["matched"] += 1
+            if form_id in xloc_form_ids:
+                counts["with_lock_data"] += 1
+                level = _xloc_level(
+                    native_runtime.plugin_handle_record_subrecords(handle, form_id)
+                )
+                matched_lock_levels[level] = matched_lock_levels.get(level, 0) + 1
+                if base_form_key is not None:
+                    base_lock_counts = matched_locked_bases.setdefault(
+                        base_form_key, {"count": 0, "levels": {}, "form_ids": []}
+                    )
+                    base_lock_counts["count"] += 1
+                    base_lock_counts["form_ids"].append(form_id & 0x00FFFFFF)
+                    levels = base_lock_counts["levels"]
+                    levels[level] = levels.get(level, 0) + 1
             matched.append(form_id)
             matched_base_keys[form_id] = base_key
             if race_key is not None:
@@ -2096,11 +2222,47 @@ def delete_placed_by_base(ctx, plugin_path, base_types, race_specs, dry_run, out
                     by_race[race_key]["deleted"] += 1
             if deleted:
                 plugin.save(target, backend=backend)
+        locked_base_records = []
+        for base_form_key, counts in matched_locked_bases.items():
+            object_id = _form_key_object_id(base_form_key)
+            summary = (
+                None
+                if object_id is None
+                else native_runtime.plugin_handle_record_summary(handle, object_id)
+            )
+            locked_base_records.append(
+                {
+                    "form_key": base_form_key,
+                    "editor_id": None if summary is None else summary.editor_id,
+                    "count": counts["count"],
+                    "form_ids": [f"{form_id:06X}" for form_id in counts["form_ids"]],
+                    "levels": [
+                        {"level": level, "count": count}
+                        for level, count in sorted(
+                            counts["levels"].items(),
+                            key=lambda item: (-1 if item[0] is None else item[0]),
+                        )
+                    ],
+                }
+            )
+        locked_base_records.sort(key=lambda row: (-row["count"], row["form_key"]))
         result = {
             "plugin": plugin.plugin_name,
             "base_types": ["ALL"] if delete_all else sorted(requested_set),
             "placed_scanned": len(placed_ids),
+            "placed_with_lock_data": len(xloc_form_ids),
             "matched": len(matched),
+            "matched_with_lock_data": sum(
+                counts["with_lock_data"] for counts in by_base.values()
+            ),
+            "matched_lock_levels": [
+                {"level": level, "count": count}
+                for level, count in sorted(
+                    matched_lock_levels.items(),
+                    key=lambda item: (-1 if item[0] is None else item[0]),
+                )
+            ],
+            "locked_base_records": locked_base_records,
             "deleted": deleted,
             "dry_run": dry_run,
             "output": str(target),
@@ -2427,11 +2589,13 @@ def _clear_quest_start_game_enabled(subrecords):
 @click.option("--manifest", "manifest_path", default=None, help="Write a JSON manifest of changed QUST DNAM flags here.")
 @click.option("--dry-run", is_flag=True, default=False, help="Report what would change without saving.")
 @click.option("--output", "output_path", default=None, help="Write the modified plugin here instead of overwriting PLUGIN_PATH.")
+@click.option("--keep-first", type=click.IntRange(min=0), default=0, show_default=True, help="Keep the first N enabled quests, ordered by FormID, for deterministic bisection.")
+@click.option("--keep-editor-id", "keep_editor_ids", multiple=True, help="Keep an enabled quest with this exact EditorID. Repeat for multiple quests.")
 @click.option("--strings-dir", default=None, help="Override localized strings directory.")
 @click.option("--language", default=None, help="Preferred localized strings language.")
 @click.option("--backend", type=click.Choice(["auto", "native", "python"]), default="auto", show_default=True, help="ESP runtime backend.")
 @click.pass_context
-def disable_quest_autostart(ctx, plugin_path, manifest_path, dry_run, output_path, strings_dir, language, backend):
+def disable_quest_autostart(ctx, plugin_path, manifest_path, dry_run, output_path, keep_first, keep_editor_ids, strings_dir, language, backend):
     """Clear the Start Game Enabled bit on every QUST DNAM subrecord."""
     from creation_lib.esp import native_runtime
 
@@ -2443,10 +2607,13 @@ def disable_quest_autostart(ctx, plugin_path, manifest_path, dry_run, output_pat
     with _load_plugin(plugin_file, game=ctx.obj.get("game"), strings_dir=strings_dir, language=language, backend=backend) as plugin:
         handle = _require_native(plugin, "disable-quest-autostart")
         rows: list[dict] = []
-        quest_ids = native_runtime.plugin_handle_record_form_ids(handle, ["QUST"])
+        kept_rows: list[dict] = []
+        quest_ids = sorted(native_runtime.plugin_handle_record_form_ids(handle, ["QUST"]))
         records_with_dnam = 0
         records_with_short_dnam = 0
         dnam_subrecords_changed = 0
+        enabled_quests_seen = 0
+        kept_editor_ids = {editor_id.casefold() for editor_id in keep_editor_ids}
         for form_id in quest_ids:
             subrecords = native_runtime.plugin_handle_record_subrecords(handle, form_id)
             if subrecords is None:
@@ -2458,16 +2625,24 @@ def disable_quest_autostart(ctx, plugin_path, manifest_path, dry_run, output_pat
                 records_with_short_dnam += 1
             if not changes:
                 continue
-            dnam_subrecords_changed += len(changes)
-            if not dry_run:
-                native_runtime.plugin_handle_set_record_subrecords(handle, form_id, kept)
             summary = native_runtime.plugin_handle_record_summary(handle, form_id)
-            rows.append({
+            row = {
                 "form_id": f"{form_id:08X}",
                 "form_key": f"{plugin.plugin_name}:{form_id & 0x00FFFFFF:06X}",
                 "editor_id": None if summary is None else summary.editor_id,
                 "dnam": changes,
-            })
+            }
+            enabled_quests_seen += 1
+            if enabled_quests_seen <= keep_first or (
+                row["editor_id"] is not None
+                and row["editor_id"].casefold() in kept_editor_ids
+            ):
+                kept_rows.append(row)
+                continue
+            dnam_subrecords_changed += len(changes)
+            if not dry_run:
+                native_runtime.plugin_handle_set_record_subrecords(handle, form_id, kept)
+            rows.append(row)
         if rows and not dry_run:
             if output_path:
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -2481,8 +2656,10 @@ def disable_quest_autostart(ctx, plugin_path, manifest_path, dry_run, output_pat
             "records_with_dnam": records_with_dnam,
             "records_missing_dnam": len(quest_ids) - records_with_dnam,
             "records_with_short_dnam": records_with_short_dnam,
+            "records_kept_enabled": len(kept_rows),
             "records_changed": len(rows),
             "dnam_subrecords_changed": dnam_subrecords_changed,
+            "kept_records": kept_rows,
             "records": rows,
         }
         if manifest_path:
