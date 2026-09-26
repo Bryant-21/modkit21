@@ -3,6 +3,11 @@ setlocal
 echo Building modkit.exe...
 cd /d "%~dp0"
 set "LOCAL_BIN=%USERPROFILE%\.local\bin"
+uv run python scripts/ensure_native.py --package creation
+if errorlevel 1 (
+    echo Native build failed!
+    exit /b 1
+)
 uv run --with pyinstaller pyinstaller modkit.spec --noconfirm
 if errorlevel 1 (
     echo Build failed!

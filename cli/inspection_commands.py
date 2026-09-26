@@ -167,12 +167,12 @@ def resolution_options(function):
 
 
 @contextmanager
-def _graph(ctx, plugin_path, master_paths, load_order):
+def _graph(ctx, plugin_path, master_paths, load_order, *, lazy_index=True):
     from creation_lib.inspection.graph import PluginGraph
     roots = [Path(plugin_path).resolve().parent, *master_paths]
     if load_order:
         roots.append(load_order.resolve().parent)
-    with PluginGraph(ctx.obj["game"], roots) as graph:
+    with PluginGraph(ctx.obj["game"], roots, lazy_index=lazy_index) as graph:
         if load_order:
             for line in load_order.read_text(encoding="utf-8-sig").splitlines():
                 name = line.strip().lstrip("*")
@@ -195,6 +195,130 @@ def _resolver(plugin_path, asset_roots, archive_paths):
         if (root / "data").is_dir():
             roots.append(root / "data")
     return AssetResolver(roots, archive_paths)
+
+
+@esp.command("quest-papyrus")
+@click.argument("plugin_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("quest_ids", nargs=-1, required=True)
+@click.option("--source-root", "source_roots", multiple=True, required=True,
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              help="Root of complete, merged PSC files, including imports. Later roots win; namespaces are directories.")
+@click.option("--generated-source-root", "generated_roots", multiple=True,
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              help="Optional generated PSC roots to compare with merged source by SHA-256. Later roots win.")
+@resolution_options
+@click.option("--max-records", default=10000, type=click.IntRange(min=0), show_default=True, help="Per-quest record limit; 0 means unlimited.")
+@click.option("--max-scripts", default=10000, type=click.IntRange(min=0), show_default=True, help="Per-quest script limit; 0 means unlimited.")
+@click.option("--fail-on-incomplete", is_flag=True, help="Exit 1 for incomplete static coverage (independent of output pagination).")
+@click.pass_context
+def quest_papyrus(ctx, plugin_path, quest_ids, source_roots, generated_roots, asset_roots,
+                  archive_paths, master_paths, load_order, max_records, max_scripts, fail_on_incomplete):
+    """Audit quest Papyrus dependency closure, VMAD/PSC coverage and source/output freshness.
+
+    Follows record references, reverse quest references, nested dialogue INFOs,
+    script parents/imports/types and literal Game.GetFormFromFile dependencies.
+    Reports every stage item, callback body, property use and SetStage producer.
+    Global --items scripts|bindings|stages|stage_producers|records|edges|issues
+    selects a flat inventory across quests; --fields/--where then apply to it.
+    Dynamic dependencies and traversal limits are explicit; this is a static
+    inventory, not proof of runtime reachability or matching compiled bytecode.
+    Supply already-merged sources; method-only patch files are not full scripts.
+    """
+    from creation_lib.inspection.papyrus import PapyrusSources
+    from creation_lib.inspection.quest_papyrus import QuestPapyrusAudit
+    from creation_lib.inspection.records import form_key
+
+    with _graph(ctx, plugin_path, master_paths, load_order, lazy_index=False) as (graph, plugin):
+        ids = _ids(plugin, quest_ids)
+        keys = list(dict.fromkeys(form_key(plugin, fid) for fid in ids))
+        if any(graph.resolve(key)[-1][1]["signature"] != "QUST" for key in keys):
+            raise click.ClickException("All requested records must be quests (QUST)")
+        sources = PapyrusSources(source_roots, generated_roots)
+        resolver = _resolver(plugin_path, asset_roots, archive_paths)
+        auditor = QuestPapyrusAudit(graph, sources, resolver, max_records=max_records, max_scripts=max_scripts)
+        try:
+            rows = [auditor.audit(key) for key in keys]
+        except (ValueError, RuntimeError, OSError) as error:
+            raise click.ClickException(str(error)) from error
+        destination = ctx.obj["report_options"].get("output")
+        if destination:
+            target = Path(destination).resolve()
+            inputs = {Path(p.file_path).resolve() for p in graph.plugins}
+            inputs.update(p for entries in sources.files.values() for _, p in entries)
+            inputs.update(p for entries in sources.generated.values() for _, p in entries)
+            for row in rows:
+                for source in row["scripts"]:
+                    inputs.update(Path(loc["path"]).resolve() for loc in source["output"]["resolution"].get("locations", []))
+            if target in inputs:
+                raise click.BadParameter("Report output must differ from inspected plugin, source and script output files", param_hint="--output")
+        options = ctx.obj["report_options"]
+        items = options.get("items")
+        selected = rows
+        if items == "stages":
+            selected = [{"root_quest": row["quest"], "quest": quest["quest"], **stage}
+                        for row in rows for quest in row["quests"] for stage in quest["stages"]]
+        elif items in {"scripts", "bindings", "stage_producers", "records", "edges", "issues"}:
+            selected = [{"root_quest": row["quest"], **entry} for row in rows for entry in row[items]]
+        elif items:
+            raise click.BadParameter("Choose scripts, bindings, stages, stage_producers, records, edges or issues", param_hint="--items")
+        report = select_rows(selected, options)
+        if items:
+            report["meta"]["items"] = items
+        report["meta"].update(schema_version=1, plugin=str(plugin_path.resolve()), game=plugin.game,
+                              complete=all(row["complete"] for row in rows),
+                              scope="Static record references, reverse QUST references, DIAL children, PSC dependencies and literal form lookups",
+                              runtime_reachability="not_proven", bytecode_matches_source="unverified",
+                              source_roots=[str(p) for p in sources.roots],
+                              generated_source_roots=[str(p) for p in sources.generated_roots],
+                              load_order=[str(p.file_path) for p in graph.plugins], resolution=resolver.describe())
+        output(report, ctx.obj["fmt"], queried=True)
+        if fail_on_incomplete and not report["meta"]["complete"]:
+            ctx.exit(1)
+
+
+@esp.command("quest-status")
+@click.argument("plugin_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("quest_ids", nargs=-1)
+@click.option("--ids-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None,
+              help="Quest EditorIDs or local hex FormIDs, one per line (# comments allowed).")
+@click.option("--all-quests", is_flag=True, help="Audit every QUST in the plugin.")
+@click.option("--source-root", "source_roots", multiple=True, required=True,
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              help="Root of the plugin's merged/generated PSC files. Later roots win.")
+@click.option("--base-root", "base_roots", multiple=True,
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              help="Game base-script PSC root. Scripts resolved here count as vanilla, not hollow.")
+@click.option("--pending-root", "pending_roots", multiple=True,
+              type=click.Path(exists=True, file_okay=False, path_type=Path),
+              help="Method-only patch fragments; empty members they define are reported as pending, not open.")
+@click.pass_context
+def quest_status(ctx, plugin_path, quest_ids, ids_file, all_quests, source_roots, base_roots, pending_roots):
+    """Batch quest triage: start wiring plus empty/missing Papyrus bodies.
+
+    For each quest: event scoping and Story Manager nodes, quest/alias scripts
+    with empty members, stage fragments that are empty or missing, and empty
+    fragments on TERM/SCEN/INFO/PACK/PERK records owned by or bound to it.
+    Static only; faster than quest-papyrus because it skips the full closure.
+    Example: modkit --fields editor_id,summary esp quest-status X.esm EN01_MQ_Bunker --source-root Scripts/Source/User
+    """
+    from creation_lib.inspection.quest_status import QuestStatusAudit
+    queries = list(quest_ids)
+    if ids_file:
+        queries += [line.split("#", 1)[0].strip() for line in ids_file.read_text(encoding="utf-8-sig").splitlines()]
+        queries = [q for q in queries if q]
+    if not queries and not all_quests:
+        raise click.UsageError("Pass quest IDs, --ids-file or --all-quests")
+    with _open(plugin_path, ctx.obj["game"]) as plugin:
+        auditor = QuestStatusAudit(plugin, source_roots, base_roots=base_roots, pending_roots=pending_roots)
+        if all_quests:
+            queries += [row["form_key"].split(":", 1)[1] for row in auditor.catalog.values()
+                        if row["signature"] == "QUST" and row["form_key"].casefold().startswith(plugin.plugin_name.casefold() + ":")]
+        rows = [auditor.audit(q) for q in dict.fromkeys(queries)]
+        report = select_rows(rows, ctx.obj["report_options"])
+        report["meta"].update(plugin=str(plugin_path.resolve()), game=plugin.game,
+                              source_roots=[str(p) for p in source_roots], base_roots=[str(p) for p in base_roots],
+                              pending_roots=[str(p) for p in pending_roots], runtime_reachability="not_proven")
+        output(report, ctx.obj["fmt"], queried=True)
 
 
 @esp.command("explain")

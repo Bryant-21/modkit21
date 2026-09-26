@@ -43,7 +43,7 @@ def test_discovery_and_doctor_report_real_commands_and_input_age(tmp_path):
     catalog = invoke("capabilities", "--command", "esp vmad")
     assert [row["command"] for row in catalog["commands"]] == ["modkit esp vmad"]
     matches = invoke("help", "search", "script bindings")
-    assert [row["command"] for row in matches["matches"]] == ["modkit esp vmad"]
+    assert [row["command"] for row in matches["matches"]] == ["modkit esp quest-papyrus", "modkit esp vmad"]
     source, index = tmp_path / "B21_Source.esp", tmp_path / "records.db"
     source.write_bytes(b"source timestamp fixture")
     index.write_bytes(b"index timestamp fixture")

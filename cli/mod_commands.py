@@ -159,7 +159,7 @@ def import_mod(ctx, source_dir, name, mod_prefix, no_git):
 @click.option("--esp-only", is_flag=True, help="Deploy only the .esp")
 @click.option("--source", default=None, help="Plugin binary, whole-plugin YAML/JSON, or authoring directory inside the mod folder (relative to that folder).")
 @click.option("--preserve-xse-inis", is_flag=True, help="Keep existing XSE .ini files in the deploy target; copy missing INIs normally.")
-@click.option("--no-esp", is_flag=True, help="Mod has no .esp (XSE-plugin-only); deploys mods/<name>/<XSE>/ to game Data/<XSE>/ (XSE = F4SE|SKSE|SFSE|NVSE|FOSE per the mod's .game)")
+@click.option("--no-esp", is_flag=True, help="Mod has no .esp (XSE-plugin-only); deploys its XSE runtime, loose assets and compiled Papyrus scripts.")
 @click.option("--xbox", is_flag=True, help="Also create Xbox-format archives")
 @click.option("--ps", is_flag=True, help="Also create PlayStation-format archives")
 @click.option("--pc-max-res", type=int, default=0, help="Max texture resolution for PC (0 = unlimited)")
@@ -184,9 +184,10 @@ def deploy(ctx, name, skip_build, skip_pack, skip_papyrus_compile, esp_only, pre
     ``.loose_manifest.json`` is written to the mod folder so a later
     ``modkit mod undeploy --loose`` knows exactly what to remove.
 
-    Use ``--no-esp`` for XSE-plugin-only mods (no .esp, just a DLL under
-    ``mods/<name>/<XSE>/Plugins/``). Skips the esp/papyrus/BA2 pipeline entirely
-    and copies the <XSE>/ tree directly to the game's Data/<XSE>/. The
+    Use ``--no-esp`` for XSE-plugin-only mods with a DLL under
+    ``mods/<name>/<XSE>/Plugins/``. Skips ESP/BA2 builds, compiles Papyrus unless
+    ``--skip-compile`` is set, and deploys the XSE runtime, loose assets and PEX
+    files from Scripts/ and data/Scripts/. Source directories are excluded. The
     ``<XSE>`` directory is F4SE/SKSE/SFSE/NVSE/FOSE per the mod's .game file.
     """
     from pathlib import Path
@@ -298,6 +299,35 @@ def deploy_loose_file_command(ctx, name, asset_path, data_dir):
         )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc))
+
+
+@mod.command("undeploy-loose-file")
+@click.argument("name")
+@click.argument("asset_path", type=click.Path(path_type=str))
+@click.option("--data-dir", default=None, help="Override game Data/ directory")
+@click.option("--dry-run", is_flag=True, help="List files that would be removed without deleting anything.")
+@click.pass_context
+def undeploy_loose_file_command(ctx, name, asset_path, data_dir, dry_run):
+    """Remove one tracked loose asset, leaving the mod's other loose files deployed."""
+    from pathlib import Path
+    from creation_lib.build.loose_deploy import undeploy_loose_file
+    from cli._output import output
+    from app.paths import get_app_root
+
+    game = _resolve_mod_game(ctx, name)
+    game_data = Path(data_dir) if data_dir else _resolve_game_data_dir(game)
+    try:
+        removed = undeploy_loose_file(
+            name,
+            asset_path,
+            game_data_dir=game_data,
+            project_root=get_app_root(),
+            dry_run=dry_run,
+            on_progress=lambda message: click.echo(message, err=True),
+        )
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc))
+    output({"mod": name, "dry_run": dry_run, "files": removed}, ctx.obj["fmt"], collection="files")
 
 
 @mod.command()

@@ -553,10 +553,12 @@ def list_records(ctx, plugin_path, record_types, match_pattern, mode_substring, 
         handle = getattr(plugin, "_rust_handle", None)
         if handle is None:
             raise click.ClickException("list-records requires the native ESP backend.")
+        from creation_lib.esp import native_runtime
+        index_rows = native_runtime.plugin_handle_record_index_rows(handle, signatures=signatures or None)
+        form_keys = {row[4]: row[0] for row in index_rows}
         if match_pattern is None or (match_pattern == "*" and not mode_substring and not mode_regex):
-            from creation_lib.esp import native_runtime
             matches = [{"form_id": row[4], "signature": row[2], "editor_id": row[1] or None}
-                       for row in native_runtime.plugin_handle_record_index_rows(handle, signatures=signatures or None)]
+                       for row in index_rows]
             if match_full and match_pattern is not None:
                 names = {row["form_id"]: row.get("full_name") for row in plugin.search_records(
                     "*", match_full=True, read_full=True, signatures=signatures or None)}
@@ -586,6 +588,7 @@ def list_records(ctx, plugin_path, record_types, match_pattern, mode_substring, 
         records = []
         for match in matches:
             record = _format_match(match, detail=match_full and match_pattern is not None)
+            record["form_key"] = form_keys[int(match["form_id"])]
             if include_subrecord_data:
                 subrecords = native_runtime.plugin_handle_record_subrecords(
                     handle, int(match["form_id"])
@@ -655,6 +658,68 @@ def cell_children(ctx, plugin_path, cell_id, temporary_only, lazy, strings_dir, 
             },
             ctx.obj.get("fmt", "json"),
         )
+
+
+@esp.command(name="quest-dialogue")
+@click.argument("plugin_path", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.argument("quest_ids", nargs=-1, required=True)
+@click.option("--strings-dir", default=None)
+@click.option("--language", default=None)
+@click.pass_context
+def quest_dialogue(ctx, plugin_path, quest_ids, strings_dir, language):
+    """List every DIAL topic and nested INFO belonging to the requested quests.
+
+    QUEST_IDS are EditorIDs or hexadecimal FormIDs. Ownership follows DIAL.QNAM
+    and the native topic-child groups, including responses without EditorIDs.
+    """
+    from creation_lib.esp import native_runtime
+
+    with _load_plugin(
+        plugin_path, game=ctx.obj.get("game"), strings_dir=strings_dir,
+        language=language, backend="native",
+    ) as plugin:
+        handle = _require_native(plugin, "quest-dialogue")
+        quest_rows = plugin.record_index_rows(signatures=["QUST"])
+        selected = {}
+        for quest_id in quest_ids:
+            raw = _resolve_record_id(plugin, quest_id)
+            matches = [row for row in quest_rows if row[4] == raw]
+            if not matches and raw is not None and raw <= 0xFFFFFF:
+                matches = [row for row in quest_rows if row[3] == raw]
+            if len(matches) != 1:
+                raise click.ClickException(f"Quest not found or ambiguous: {quest_id}")
+            row = matches[0]
+            selected[row[0].casefold()] = {"form_key": row[0], "editor_id": row[1]}
+
+        topic_owners = {}
+        for key, _eid, _sig, _oid, raw in plugin.record_index_rows(signatures=["DIAL"]):
+            owners = plugin.get_referenced_form_keys_by_subrecord(key, "QNAM")
+            owner = next((selected[k.casefold()] for k in owners if k.casefold() in selected), None)
+            if owner is not None:
+                topic_owners[raw] = owner
+        topics = json.loads(native_runtime.plugin_handle_extract_dialogue_text(handle, "json"))
+        rows = []
+        issues = []
+        seen = set()
+        for topic in topics:
+            raw = int(topic["dial_form_id"], 16)
+            if raw not in topic_owners:
+                continue
+            seen.add(raw)
+            info_ids = [info["form_id"] for info in topic.get("infos", [])]
+            record = plugin.read_authoring_record(raw)
+            expected = next((field["InfoCount"] for field in record["fields"] if "InfoCount" in field), None)
+            if expected is not None and expected != len(info_ids):
+                issues.append({"topic": topic["dial_form_id"], "expected_infos": expected, "returned_infos": len(info_ids)})
+            rows.append({"quest": topic_owners[raw], "topic_form_id": topic["dial_form_id"],
+                         "topic_editor_id": topic.get("editor_id"), "info_form_ids": info_ids,
+                         "expected_info_count": expected})
+        for missing in sorted(topic_owners.keys() - seen):
+            issues.append({"topic": f"{missing:08X}", "error": "Topic missing from native dialogue traversal"})
+        rows.sort(key=lambda row: (row["quest"]["form_key"].casefold(), row["topic_form_id"]))
+        output({"data": rows, "meta": {"plugin": plugin.plugin_name, "quests": list(selected.values()),
+                "topics": len(rows), "infos": sum(len(row["info_form_ids"]) for row in rows),
+                "complete": not issues, "issues": issues}}, ctx.obj.get("fmt", "json"))
 
 
 @esp.command(name="cell-slice-roots")
@@ -1704,7 +1769,7 @@ def header(ctx, plugin_path, author, description, header_version, next_object_id
         header_flags.set_localized: set_localized,
     }
     editing = any(v is not None for v in field_edits.values()) or any(v is not None for v in flag_edits.values())
-    with _load_plugin(plugin_file, game=ctx.obj.get("game"), strings_dir=None, language=None, backend=backend) as plugin:
+    with _load_plugin(plugin_file, game=ctx.obj.get("game"), strings_dir=None, language=None, backend=backend, lazy_index=not editing) as plugin:
         handle = _require_native(plugin, "header")
         if not editing:
             output({"plugin": plugin.plugin_name, **_header_snapshot(plugin, handle)}, fmt)

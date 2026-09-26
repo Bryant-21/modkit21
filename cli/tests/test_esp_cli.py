@@ -168,6 +168,7 @@ def test_esp_list_records_emits_eid_and_local_form_id(tmp_path) -> None:
         assert rec["signature"] == "MISC"
         assert len(rec["form_id"]) == 6
         int(rec["form_id"], 16)  # 6-hex local object id
+        assert rec["form_key"] == f"CliList.esp:{rec['form_id']}"
 
 
 def test_esp_list_records_accepts_display_alias(tmp_path) -> None:
@@ -179,6 +180,24 @@ def test_esp_list_records_accepts_display_alias(tmp_path) -> None:
     payload = json.loads(result.output)
     assert payload["type"] == "MISC"
     assert payload["count"] == 2
+
+
+def test_esp_list_records_preserves_master_ownership_with_equal_object_ids(tmp_path) -> None:
+    path = tmp_path / "B21_Identity.esp"
+    plugin = Plugin(plugin_name=path.name, file_path=path, game="fo4",
+                    header=PluginHeader(masters=["Fallout4.esm"], master_sizes=[0]),
+                    root_items=[Group(b"MISC", 0, children=[
+                        Record("MISC", 0x00000800, subrecords=[Subrecord("EDID", b"B21_MasterOverride\0")]),
+                        Record("MISC", 0x01000800, subrecords=[Subrecord("EDID", b"B21_LocalRecord\0")]),
+                    ])])
+    plugin.save(path)
+    plugin.close()
+    for filtering in ([], ["--match", "B21_*"]):
+        result = CliRunner().invoke(cli, ["--game", "fo4", "esp", "list-records", str(path), *filtering])
+        assert result.exit_code == 0, result.output
+        records = json.loads(result.output)["records"]
+        assert {row["form_id"] for row in records} == {"000800"}
+        assert {row["form_key"] for row in records} == {"Fallout4.esm:000800", "B21_Identity.esp:000800"}
 
 
 def test_esp_list_records_filters_and_emits_subrecord_data(tmp_path) -> None:

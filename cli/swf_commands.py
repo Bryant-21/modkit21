@@ -10,6 +10,9 @@ Command surface:
     modkit swf symbols inject ...       # splice named symbols src -> dst (native)
     modkit swf abc dump <swf>           # ABC constant-pool string table (class names)
     modkit swf abc markers <swf>        # which canonical marker classes the SWF has
+    modkit swf abc outline <swf> <cls>  # class traits and method signatures (native, read-only)
+    modkit swf abc disasm <swf> <cls>   # method instruction listings with resolved names
+    modkit swf abc deps <swf> <cls>     # classes and members a class depends on
     modkit swf markers build ...        # inject FO76 region marker icons into FO4 SWFs
     modkit swf markers table            # dump the canonical FO76->FO4 marker table
 
@@ -209,6 +212,25 @@ def index_cmd(ctx: click.Context):
         ctx.exit(2)
 
 
+@swf.command("render")
+@click.argument("swf_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--symbol", required=True)
+@click.option("--frame", type=click.IntRange(min=1), default=1)
+@click.option("--scale", type=click.FloatRange(min=0, min_open=True), default=1.0)
+@click.option("-o", "--output", "output_path", type=click.Path(path_type=Path), required=True)
+def render(swf_path: Path, symbol: str, frame: int, scale: float, output_path: Path):
+    """Rasterize a named sprite frame to transparent PNG using the native renderer."""
+    from creation_lib.swf import native_runtime
+
+    try:
+        png = native_runtime.render_symbol_png(swf_path.read_bytes(), symbol, frame, scale)
+    except (ValueError, RuntimeError, AttributeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(png)
+    click.echo(f"Rendered {symbol} frame {frame}: {output_path}")
+
+
 @swf.group()
 def symbols():
     """Byte-exact SymbolClass inspection / injection (native splicer)."""
@@ -305,7 +327,7 @@ def symbols_inject(ctx: click.Context, src: Path, dst: Path, names: tuple[str, .
 
 @swf.group()
 def abc():
-    """ActionScript Byte Code inspection (read-only constant-pool view)."""
+    """ActionScript Byte Code inspection (read-only)."""
 
 
 @abc.command("dump")
@@ -364,6 +386,53 @@ def abc_markers(ctx: click.Context, swf_path: Path):
     else:
         click.echo(f"present ({len(present)}): {', '.join(present) or '-'}")
         click.echo(f"absent  ({len(absent)}): {', '.join(absent) or '-'}")
+
+
+def _abc_report(ctx: click.Context, produce) -> None:
+    try:
+        report = produce()
+    except Exception as exc:
+        click.echo(f"error: {exc}", err=True)
+        ctx.exit(2)
+        return
+    fmt = ctx.obj.get("fmt", "json") if ctx.obj else "json"
+    output(report, fmt if fmt in JSON_FORMATS else "json")
+
+
+@abc.command("outline")
+@click.argument("swf_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("class_name")
+@click.pass_context
+def abc_outline(ctx: click.Context, swf_path: Path, class_name: str):
+    """Show a class's superclass, interfaces, traits and method signatures."""
+    from creation_lib.swf import native_runtime
+
+    _abc_report(ctx, lambda: native_runtime.abc_class_outline(swf_path.read_bytes(), class_name))
+
+
+@abc.command("disasm")
+@click.argument("swf_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("class_name")
+@click.option("--method", default=None,
+              help="Method label (populate, 'get total') or property name for both accessors")
+@click.pass_context
+def abc_disasm(ctx: click.Context, swf_path: Path, class_name: str, method: str | None):
+    """Disassemble a class's methods with names, strings and branch targets resolved."""
+    from creation_lib.swf import native_runtime
+
+    _abc_report(ctx, lambda: native_runtime.abc_disassemble(swf_path.read_bytes(), class_name, method))
+
+
+@abc.command("deps")
+@click.argument("swf_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("class_name")
+@click.option("--transitive", is_flag=True, help="Follow classes defined in the same movie")
+@click.pass_context
+def abc_deps(ctx: click.Context, swf_path: Path, class_name: str, transitive: bool):
+    """List the classes (movie-defined, built-in, external) and members a class uses."""
+    from creation_lib.swf import native_runtime
+
+    _abc_report(ctx, lambda: native_runtime.abc_class_references(swf_path.read_bytes(), class_name, transitive))
 
 
 @swf.group()
