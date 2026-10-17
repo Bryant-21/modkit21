@@ -78,7 +78,12 @@ ui_mods = collect_submodules(
 )
 ui_datas = collect_data_files(
     "ui", include_py_files=True,
-    excludes=["**/__pycache__/**", "**/tests/**", "**/*.pyc", "**/*.pyo"],
+    excludes=[
+        "**/__pycache__/**", "**/tests/**", "**/*.pyc", "**/*.pyo",
+        # gitignored per-machine settings can hold credentials; the sweep ignores .gitignore
+        "**/toolkit_settings*", "**/settings_data/**", "**/editor_settings.json",
+        "**/.claude/**", "**/CLAUDE.md", "**/*.bak", "**/debug_frame.png",
+    ],
 )
 
 # File watchers are imported by lazily loaded UI workspaces.
