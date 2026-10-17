@@ -24,7 +24,20 @@ exe_name = os.environ.get("MODBOX21_EXE_NAME", "ModBox21")
 dist_name = os.environ.get("MODBOX21_DIST_NAME", exe_name)
 icon_path = os.environ.get("MODBOX21_ICON", "resource/icon.ico")
 is_nif_build = dist_name.lower().endswith("-nif") or exe_name.lower().endswith("-nif")
+# "minimal" variants (Previs, Papyrus, Materials, ESPEditor) skip the heavy
+# optional dependencies and bundled tool resources the full toolkit carries.
+is_slim_build = os.environ.get("MODBOX21_RESOURCE_PROFILE", "full").lower() == "minimal"
 onefile = os.environ.get("MODBOX21_ONEFILE", "").lower() not in ("", "0", "false", "no")
+
+# The manager's native helper is a required app dependency, not user onboarding.
+# Private builds include a verified offline repair payload; public full-toolkit
+# delivery needs a separate license review because this spec includes FBX.
+manager_runtime_datas = []
+if exe_name.casefold() in {"modbox21", "modbox21-modmanager"}:
+    from creation_lib.mod_manager.runtime_delivery import freeze_datas
+    manager_runtime_datas = freeze_datas(
+        project_root, public=os.environ.get("MODBOX21_PUBLIC_RELEASE", "") == "1", onefile=onefile,
+    )
 
 # Onefile mode has no folder beside the EXE, so resource/ (tool binaries, icons)
 # must be bundled into the archive. Exclude spriggit (large, unused by the
@@ -81,8 +94,8 @@ pil_datas = collect_data_files("PIL")
 sqlite_vec_libs = collect_dynamic_libs("sqlite_vec")
 
 # Collect winpty (pywinpty) native DLLs for the AI terminal PTY backend
-winpty_libs = collect_dynamic_libs("winpty")
-winpty_datas = collect_data_files("winpty")
+winpty_libs = [] if is_slim_build else collect_dynamic_libs("winpty")
+winpty_datas = [] if is_slim_build else collect_data_files("winpty")
 
 # Collect Autodesk FBX SDK bindings (.pyd + runtime DLL)
 import glob as _glob
@@ -92,14 +105,14 @@ _fbx_pyd = _glob.glob(os.path.join(
 if not _fbx_pyd:
     # Also check venv site-packages
     _fbx_pyd = _glob.glob(os.path.join(".venv", "Lib", "site-packages", "fbx*.pyd"))
-_fbx_binaries = [(p, ".") for p in _fbx_pyd]
+_fbx_binaries = [] if is_slim_build else [(p, ".") for p in _fbx_pyd]
 
 # FBX SDK runtime DLL
 _fbx_dll = r"C:\Program Files\Autodesk\FBX\FBX SDK\2020.3.9\lib\x64\release\libfbxsdk.dll"
-if os.path.isfile(_fbx_dll):
+if os.path.isfile(_fbx_dll) and not is_slim_build:
     _fbx_binaries.append((_fbx_dll, "."))
 
-if is_nif_build:
+if is_nif_build or is_slim_build:
     creation_resource_datas = [
         ("py_creation_lib/python/creation_lib/resources/xWMAEncode.exe", "creation_lib/resources"),
         ("py_creation_lib/python/creation_lib/resources/BmlFuzEncode.exe", "creation_lib/resources"),
@@ -116,6 +129,7 @@ else:
 nif_excludes = [
     "trimesh",
 ] if is_nif_build else []
+slim_excludes = ["fbx", "pedalboard", "winpty", "capstone"] if is_slim_build else []
 
 a = Analysis(
     ["app.py"],
@@ -141,6 +155,7 @@ a = Analysis(
         ("py_creation_lib/python/creation_lib/renderer/shaders", "creation_lib/renderer/shaders"),
         ("py_creation_lib/python/creation_lib/renderer/assets", "creation_lib/renderer/assets"),
         *ui_datas,
+        *manager_runtime_datas,
         *([ ("configs", "configs") ] if os.path.isdir("configs") else []),
         ("VERSION", "."),
         *onefile_resource_datas,
@@ -161,9 +176,7 @@ a = Analysis(
         "sqlite3",
         "sqlite_vec",
         "winreg",
-        "fbx",
-        "creation_lib.fbx",
-        "creation_lib.fbx.nif_to_fbx",
+        *([] if is_slim_build else ["fbx", "creation_lib.fbx", "creation_lib.fbx.nif_to_fbx"]),
         "ctypes",
         "multiprocessing",
         "xml.etree.ElementTree",
@@ -212,6 +225,7 @@ a = Analysis(
         "pandas",
         "cv2",
         *nif_excludes,
+        *slim_excludes,
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

@@ -118,3 +118,53 @@ def test_swf_abc_outline_reports_native_errors(monkeypatch, tmp_path) -> None:
 
     assert result.exit_code == 2
     assert "is not defined" in result.stderr
+
+
+def test_swf_abc_decompile_prints_source_text(monkeypatch, tmp_path) -> None:
+    from creation_lib.swf import native_runtime
+
+    swf_path = tmp_path / "menu.swf"
+    swf_path.write_bytes(b"fake-swf")
+    calls = []
+
+    def fake(data, class_name, method=None):
+        calls.append((class_name, method))
+        return "function populate():void\n{\n}\n"
+
+    monkeypatch.setattr(native_runtime, "abc_decompile", fake)
+
+    result = CliRunner().invoke(cli, ["swf", "abc", "decompile", str(swf_path), "ItemCard", "--method", "populate"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("ItemCard", "populate")]
+    assert result.output == "function populate():void\n{\n}\n"
+
+
+def test_swf_abc_decompile_wraps_source_for_explicit_json(monkeypatch, tmp_path) -> None:
+    from creation_lib.swf import native_runtime
+
+    swf_path = tmp_path / "menu.swf"
+    swf_path.write_bytes(b"fake-swf")
+    monkeypatch.setattr(native_runtime, "abc_decompile", lambda data, class_name, method=None: "package\n{\n}\n")
+
+    result = CliRunner().invoke(cli, ["--format", "json", "swf", "abc", "decompile", str(swf_path), "ItemCard"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output == '{"class":"ItemCard","method":null,"source":"package\\n{\\n}\\n"}\n'
+
+
+def test_swf_abc_export_writes_package_tree(monkeypatch, tmp_path) -> None:
+    from creation_lib.swf import native_runtime
+
+    swf_path = tmp_path / "menu.swf"
+    swf_path.write_bytes(b"fake-swf")
+    classes = [("Shared.AS3.BSButtonHint", "package Shared.AS3\n{\n}\n"), ("ItemCard", "package\n{\n}\n")]
+    monkeypatch.setattr(native_runtime, "abc_decompile_movie", lambda data: (classes, 1))
+    out = tmp_path / "as3"
+
+    result = CliRunner().invoke(cli, ["swf", "abc", "export", str(swf_path), str(out)])
+
+    assert result.exit_code == 0, result.output
+    assert (out / "Shared" / "AS3" / "BSButtonHint.as").read_text(encoding="utf-8") == "package Shared.AS3\n{\n}\n"
+    assert (out / "ItemCard.as").exists()
+    assert '"classes":2' in result.output and '"fallback_methods":1' in result.output

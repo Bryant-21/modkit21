@@ -8,7 +8,7 @@ if errorlevel 1 (
     echo Native build failed!
     exit /b 1
 )
-uv run --with pyinstaller pyinstaller modkit.spec --noconfirm
+uv run --with pyinstaller python -m PyInstaller modkit.spec --noconfirm
 if errorlevel 1 (
     echo Build failed!
     exit /b 1

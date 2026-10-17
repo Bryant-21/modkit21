@@ -78,6 +78,9 @@ jobs:
       - name: Build NIF editor
         shell: pwsh
         run: powershell -NoProfile -ExecutionPolicy Bypass -File build_nif_ui.ps1
+      - name: Build Previs and Precombines
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File build_previs_ui.ps1
       - name: Zip artifacts
         shell: pwsh
         run: |
@@ -85,6 +88,7 @@ jobs:
           Compress-Archive -Path dist/ModBox21/ModBox21.exe, dist/ModBox21/_internal, dist/ModBox21/modkit -DestinationPath "ModBox21-$v-win64.zip"
           Compress-Archive -Path dist/modkit/* -DestinationPath "modkit-$v-win64.zip"
           Compress-Archive -Path dist/ModBox21-NIF/* -DestinationPath "ModBox21-NIF-$v-win64.zip"
+          Compress-Archive -Path dist/ModBox21-Previs/* -DestinationPath "ModBox21-Previs-$v-win64.zip"
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -120,6 +124,10 @@ jobs:
             config.
           - **`ModBox21-NIF-VERSION_PLACEHOLDER-win64.zip`** - the standalone NIF
             editor desktop app, packaged on its own.
+          - **`ModBox21-Previs-VERSION_PLACEHOLDER-win64.zip`** - the standalone
+            Previs and Precombines app: finds cells whose precombines or previs a
+            load order broke and rebuilds them into one patch, without the
+            Creation Kit.
 
           ## Requirements
 
@@ -137,5 +145,5 @@ jobs:
           '@
           $notes = $notes -replace 'VERSION_PLACEHOLDER', $v
           $notes | Out-File -FilePath release_notes.md -Encoding utf8
-          $files = @("ModBox21-$v-win64.zip", "modkit-$v-win64.zip", "ModBox21-NIF-$v-win64.zip")
+          $files = @("ModBox21-$v-win64.zip", "modkit-$v-win64.zip", "ModBox21-NIF-$v-win64.zip", "ModBox21-Previs-$v-win64.zip")
           gh release create "v$v" --target ${{ github.sha }} $files --title "v$v" --notes-file release_notes.md

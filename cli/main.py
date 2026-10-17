@@ -179,10 +179,13 @@ cli.add_command(havok)
 from cli.anim_commands import anim
 
 cli.add_command(anim)
+from cli.manager_commands import manager
+cli.add_command(manager)
 
 from cli.build_commands import build  # noqa: E402
 from cli.archive_commands import archive  # noqa: E402
 from cli.texture_commands import texture  # noqa: E402
+from cli.material_commands import material  # noqa: E402
 from cli.mod_commands import mod  # noqa: E402
 from cli.esp_commands import esp  # noqa: E402
 from cli.ck_commands import ck  # noqa: E402
@@ -191,10 +194,13 @@ from cli.index_commands import index  # noqa: E402
 from cli.swf_commands import swf  # noqa: E402
 from cli.setup_commands import setup  # noqa: E402
 from cli.world_commands import world  # noqa: E402
+from cli.re_commands import re_group  # noqa: E402
+from cli.previs_commands import previs  # noqa: E402
 
 cli.add_command(build)
 cli.add_command(archive)
 cli.add_command(texture)
+cli.add_command(material)
 cli.add_command(mod)
 cli.add_command(esp)
 cli.add_command(ck)
@@ -203,6 +209,8 @@ cli.add_command(index)
 cli.add_command(swf)
 cli.add_command(setup)
 cli.add_command(world)
+cli.add_command(re_group, name="re")
+cli.add_command(previs)
 
 from cli import inspection_commands as _inspection_commands  # noqa: E402, F401
 from cli.discovery_commands import register as _register_discovery  # noqa: E402
@@ -238,6 +246,8 @@ def _force_exit(code):
 
 
 def main():
+    from creation_lib.mod_manager.runtime_entry import dispatch
+    dispatch(sys.argv[1:])
     multiprocessing.freeze_support()
     _configure_stdio()
     _bootstrap_environment()

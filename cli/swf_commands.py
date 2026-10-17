@@ -13,6 +13,8 @@ Command surface:
     modkit swf abc outline <swf> <cls>  # class traits and method signatures (native, read-only)
     modkit swf abc disasm <swf> <cls>   # method instruction listings with resolved names
     modkit swf abc deps <swf> <cls>     # classes and members a class depends on
+    modkit swf abc decompile <swf> <cls> [--method M]  # AS3 source (native decompiler)
+    modkit swf abc export <swf> <dir>   # decompile every class to <dir>/<pkg>/<Class>.as
     modkit swf markers build ...        # inject FO76 region marker icons into FO4 SWFs
     modkit swf markers table            # dump the canonical FO76->FO4 marker table
 
@@ -433,6 +435,53 @@ def abc_deps(ctx: click.Context, swf_path: Path, class_name: str, transitive: bo
     from creation_lib.swf import native_runtime
 
     _abc_report(ctx, lambda: native_runtime.abc_class_references(swf_path.read_bytes(), class_name, transitive))
+
+
+@abc.command("decompile")
+@click.argument("swf_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("class_name")
+@click.option("--method", default=None,
+              help="Method label (populate, 'get total', constructor, 'static initializer')")
+@click.pass_context
+def abc_decompile(ctx: click.Context, swf_path: Path, class_name: str, method: str | None):
+    """Decompile a class (or one method) to ActionScript 3 source.
+
+    Prints the source as text; an explicit JSON --format wraps it in a report.
+    Methods the structurer cannot handle print as commented disassembly."""
+    from creation_lib.swf import native_runtime
+
+    try:
+        source = native_runtime.abc_decompile(swf_path.read_bytes(), class_name, method)
+    except Exception as exc:
+        click.echo(f"error: {exc}", err=True)
+        ctx.exit(2)
+        return
+    fmt = ctx.obj.get("fmt", "json") if ctx.obj else "json"
+    # The global default is json, so only an explicit choice switches away from plain source.
+    explicit = ctx.find_root().get_parameter_source("fmt") is not click.core.ParameterSource.DEFAULT
+    if explicit and fmt in JSON_FORMATS:
+        output({"class": class_name, "method": method, "source": source}, fmt)
+    else:
+        click.echo(source, nl=not source.endswith("\n"))
+
+
+@abc.command("export")
+@click.argument("swf_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("out_dir", type=click.Path(file_okay=False, path_type=Path))
+@click.pass_context
+def abc_export(ctx: click.Context, swf_path: Path, out_dir: Path):
+    """Decompile every class into <out_dir>/<package path>/<Class>.as."""
+    from creation_lib.swf import native_runtime
+
+    def produce():
+        classes, fallbacks = native_runtime.abc_decompile_movie(swf_path.read_bytes())
+        for name, source in classes:
+            path = out_dir.joinpath(*name.split(".")).with_suffix(".as")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(source, encoding="utf-8", newline="\n")
+        return {"output": str(out_dir), "classes": len(classes), "fallback_methods": fallbacks}
+
+    _abc_report(ctx, produce)
 
 
 @swf.group()

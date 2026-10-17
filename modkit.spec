@@ -9,8 +9,14 @@ Build with:
 import glob as _glob
 import os
 import sys
-from PyInstaller.utils.hooks import collect_dynamic_libs
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
+
+project_root = os.path.abspath(globals().get("SPECPATH", os.getcwd()))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from cli._build_info import write_build_info
+from creation_lib.mod_manager.runtime_delivery import freeze_datas
 
 _build_info = write_build_info(os.getcwd(), "build/modkit_build_info.json")
 
@@ -57,10 +63,13 @@ a = Analysis(
         *_fbx_binaries,
     ],
     datas=[
+        *freeze_datas(os.getcwd()),
         # NIF schema XML (required by creation_lib.nif)
         ("py_creation_lib/python/creation_lib/nif/nif_xml", "creation_lib/nif/nif_xml"),
         # Runtime helper binaries used via creation_lib.paths.get_resource_dir()
         ("py_creation_lib/python/creation_lib/resources", "creation_lib/resources"),
+        # Bundled Papyrus type corpus + flags file for installs without CK sources
+        ("py_creation_lib/python/creation_lib/pex/data", "creation_lib/pex/data"),
         # lib source code needed at runtime
         ("py_creation_lib/python/creation_lib", "py_creation_lib/python/creation_lib"),
         # VERSION file
@@ -68,6 +77,41 @@ a = Analysis(
         (_build_info, "."),
     ],
     hiddenimports=[
+        *collect_submodules("creation_lib.mod_manager"),
+        # Rust's PyO3 imports are invisible to Python bytecode analysis.
+        "codecs",
+        "concurrent.futures",
+        "configparser",
+        "contextlib",
+        "copy",
+        "ctypes.wintypes",
+        "dataclasses",
+        "datetime",
+        "functools",
+        "http.client",
+        "inspect",
+        "io",
+        "json",
+        "msvcrt",
+        "multiprocessing.connection",
+        "os",
+        "pathlib",
+        "queue",
+        "re",
+        "shutil",
+        "subprocess",
+        "sys",
+        "tempfile",
+        "threading",
+        "time",
+        "urllib.error",
+        "urllib.parse",
+        "urllib.request",
+        "uuid",
+        "warnings",
+        "winreg",
+        "zipfile",
+        "creation_lib.ba2.native_runtime",
         "numpy",
         "PIL.Image",
         "sqlite3",

@@ -333,6 +333,49 @@ def test_esp_get_record_not_found_exits_nonzero(tmp_path) -> None:
     assert "not a FormID or EditorID" in result.output or "not found" in result.output
 
 
+_IMGS_HNAM_WITH_ZERO_SUNLIGHT = (8.0, 0.02, 0.5, 0.1, 4.5, 2.5, 0.0, 1.5, 0.18)
+_IMGS_HDR_KEYS = [
+    "EyeAdaptSpeed", "TonemapE", "BloomThreshold", "BloomScale", "AutoExposureMax",
+    "AutoExposureMin", "SunlightScale", "SkyScale", "MiddleGray",
+]
+
+
+def _make_imgs_zero_field_plugin(path: Path) -> None:
+    plugin = Plugin.new(path.name, game="fo4")
+    record = plugin.new_record("IMGS")
+    record.editor_id = "CliZeroSunlight"
+    record.add_subrecord("HNAM", struct.pack("<9f", *_IMGS_HNAM_WITH_ZERO_SUNLIGHT))
+    plugin.add_record(record)
+    plugin.save(path)
+
+
+def test_esp_get_record_keeps_zero_valued_struct_fields(tmp_path) -> None:
+    plugin_path = tmp_path / "CliZeroField.esp"
+    _make_imgs_zero_field_plugin(plugin_path)
+
+    lossless = json.loads(_esp("get-record", str(plugin_path), "CliZeroSunlight").output)
+    hnam = next(field for field in lossless["fields"] if field["signature"] == "HNAM")
+    assert list(hnam["fields"]) == _IMGS_HDR_KEYS
+    assert hnam["fields"]["SunlightScale"] == 0.0
+    assert hnam["value"]["sunlight_scale"] == 0.0
+
+    authoring = json.loads(_esp("get-record", str(plugin_path), "CliZeroSunlight", "--authoring").output)
+    hdr = next(field["HDR"] for field in authoring["fields"] if "HDR" in field)
+    assert list(hdr) == _IMGS_HDR_KEYS
+    assert hdr["SunlightScale"] == 0.0
+
+
+def test_compact_authoring_read_still_omits_zero_struct_fields(tmp_path) -> None:
+    plugin_path = tmp_path / "CliZeroCompact.esp"
+    _make_imgs_zero_field_plugin(plugin_path)
+
+    plugin = Plugin.load(plugin_path, game="fo4", backend="native")
+    form_id = int(_local_object_id(plugin, "CliZeroSunlight"), 16)
+    hdr = next(field["HDR"] for field in plugin.read_authoring_record(form_id)["fields"] if "HDR" in field)
+    assert "SunlightScale" not in hdr
+    assert len(hdr) == 8
+
+
 def test_esp_get_records_reads_multiple_records_with_one_open(tmp_path) -> None:
     plugin_path = tmp_path / "CliGetMany.esp"
     _make_plugin_with_records(plugin_path)

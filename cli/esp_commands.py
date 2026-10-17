@@ -930,7 +930,7 @@ def get_record(ctx, plugin_path, record_id, authoring, strings_dir, language, ba
             output({"error": f"not a FormID or EditorID: {record_id}"}, ctx.obj.get("fmt", "json"))
             return
         if authoring:
-            record = plugin.read_authoring_record(form_id)
+            record = plugin.read_authoring_record(form_id, keep_present_fields=True)
             if record is None:
                 output({"error": f"record not found: {record_id}"}, ctx.obj.get("fmt", "json"))
                 return
@@ -985,7 +985,7 @@ def get_records(ctx, plugin_path, record_ids, authoring, strings_dir, language, 
                 missing.append(record_id)
                 continue
             if authoring:
-                record = plugin.read_authoring_record(form_id)
+                record = plugin.read_authoring_record(form_id, keep_present_fields=True)
                 if record is None:
                     missing.append(record_id)
                     continue

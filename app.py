@@ -6,6 +6,11 @@
 import os
 import sys
 from pathlib import Path
+from creation_lib.mod_manager.runtime_entry import dispatch as dispatch_runtime_helper
+
+if __name__ == "__main__":
+    dispatch_runtime_helper(sys.argv[1:])
+
 os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 
 from ui.toolkit.__main__ import main, run_toolkit_variant
